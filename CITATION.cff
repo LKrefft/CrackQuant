@@ -1,12 +1,17 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
-authors:
-  - family-names: Druskat
-    given-names: Stephan
-    orcid: XXXX
 title: "My Research Software"
+
+authors:
+  - family-names: Krefft 
+    given-names: Lorenz
+    orcid: https://orcid.org/0009-0001-0628-3326   
+
 version: 1.0
+date-released: 2026-03-17
+
+repository-code: https://github.com/LKrefft/CrackQuant
+
 identifiers:
   - type: doi
     value: 10.5281/zenodo.1234
-date-released: 2026-03-17
