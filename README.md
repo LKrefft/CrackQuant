@@ -27,8 +27,15 @@ python Projection_example.py --data_path /path/to/dataset
 2) Evaluating Estimated Results Against Ground Truth
 
 Evaluation_example.py provides an example workflow for comparing estimated/derived results against the ground truth data.
+It supports two modes:
 
-python Evaluation_example.py --data_path /path/to/dataset
+SINGLE MODE and BATCH MODE 
+
+The Single Mode --data_path points directly to a folder. The Batch Mode --data_path points to a root folder (e.g. ".../CrackQuant/") that contains
+several test series. Depending on the --data_path, either a single experiment from the CrackQuant dataset is evaluated, or the entire dataset is analyzed.
+If --plot is included, the results are visualized.
+
+python Evaluation_example.py --data_path /path/to/dataset --plot
 
 3) Verifying Ground Truth Crack Center Axes Using Binary Masks
 
