@@ -30,8 +30,10 @@ It supports two modes:
    whole test series).
 
    For every experiment found, exactly the same metric/matching logic as in
-   single mode is applied. At the end, the script prints:
-     - a detail table for every matched crack (all experiments)
+   single mode is applied. Each segment in Evaluation_example.json is assigned
+   to the ground-truth segment with the smallest symmetric mean
+   point-to-polyline distance. At the end, the script prints:
+     - a detail table for every evaluated crack segment (all experiments)
      - a summary per experiment
      - a summary per test series
      - an overall summary across all experiments
@@ -188,41 +190,63 @@ def symmetric_polyline_distance(A_points, B_points, statistic="max", chunk_segme
 
 def match_measurements_to_gt(gt_cracks, meas_cracks):
     """
-    For every measured crack, find the best matching GT crack.
-    Matching is based on symmetric polyline distance.
+    Match each predicted/measured crack segment to the best ground-truth segment.
 
-    A match is accepted only if the minimum directional distance < 0.05 m.
+    For every segment in Evaluation_example.json, the ground-truth segment with
+    the smallest symmetric mean point-to-polyline distance is selected:
+
+        d(A, B) = max(mean(A -> B), mean(B -> A))
+
+    No distance threshold is applied. Matching is performed independently for
+    each predicted/measured segment, so more than one prediction may select the
+    same ground-truth segment.
+
+    Returns:
+        results: dict keyed by measurement/prediction UID
     """
-    results = {}
     gt_items = list(gt_cracks.items())
+    if not gt_items:
+        raise ValueError("GroundTruth.json does not contain any crack segments.")
+
+    results = {}
 
     for meas_uid, meas in meas_cracks.items():
         A = meas["coords"]
         best_uid = None
+        best_gt = None
         best_d = float("inf")
-        best_d_min = None
+        best_d1 = float("inf")
+        best_d2 = float("inf")
 
         for gt_uid, gt in gt_items:
-            d1, d2 = symmetric_polyline_distance(A, gt["coords"],
-                                                 statistic="mean",
-                                                 chunk_segments=1024)
+            d1, d2 = symmetric_polyline_distance(
+                A, gt["coords"], statistic="mean", chunk_segments=1024
+            )
             d = max(d1, d2)
 
             if d < best_d:
-                best_d = d
-                best_d_min = min(d1, d2)
                 best_uid = gt_uid
+                best_gt = gt
+                best_d = float(d)
+                best_d1 = float(d1)
+                best_d2 = float(d2)
 
-        # Apply acceptance criterion
-        if best_d_min is not None and best_d_min < 0.05:
-            results[meas_uid] = {
-                "best_gt": best_uid,
-                "distance": best_d,
-                "width_mm_mes": meas["width_mm_median"],
-                "width_mm_gt": gt_cracks[best_uid]["width_mm_median"],
-                "length_m_mes": meas["length_m"],
-                "length_m_gt": gt_cracks[best_uid]["length_m"],
-            }
+        if best_uid is None or best_gt is None or not np.isfinite(best_d):
+            raise ValueError(
+                f"No finite ground-truth match could be determined for {meas_uid}. "
+                "Check that both centerlines contain at least two valid coordinates."
+            )
+
+        results[meas_uid] = {
+            "best_gt": best_uid,
+            "distance": best_d,
+            "distance_meas_to_gt": best_d1,
+            "distance_gt_to_meas": best_d2,
+            "width_mm_mes": meas["width_mm_median"],
+            "width_mm_gt": best_gt["width_mm_median"],
+            "length_m_mes": meas["length_m"],
+            "length_m_gt": best_gt["length_m"],
+        }
 
     return results
 
@@ -307,10 +331,11 @@ def plot_matches(gt_cracks, meas_cracks, matches, title_suffix=""):
 
 def evaluate_single_experiment(gt_path: Path, meas_path: Path):
     """
-    Runs the full matching pipeline for exactly one experiment
+    Run the full matching pipeline for exactly one experiment
     (one GroundTruth.json + one Evaluation_example.json).
 
-    Returns (gt_cracks, meas_cracks, matches).
+    Returns:
+        gt_cracks, meas_cracks, matches
     """
     gt_data = load_json(gt_path)
     meas_data = load_json(meas_path)
@@ -329,15 +354,15 @@ def evaluate_single_experiment(gt_path: Path, meas_path: Path):
 
     gt_cracks = collect_cracks(gt_filtered)
     meas_cracks = collect_cracks(meas_filtered)
-
     matches = match_measurements_to_gt(gt_cracks, meas_cracks)
 
     return gt_cracks, meas_cracks, matches
 
 
-def print_single_result(matches, meas_cracks):
-    """Prints the same textual comparison table as in the original script."""
-    print("\n=== Comparison: Ground Truth <-> Measurements ===")
+def print_single_result(matches, meas_cracks, gt_cracks):
+    """Print detailed single-experiment results."""
+    print("\n=== Comparison: Ground Truth <-> Predictions/Measurements ===")
+
     for meas_uid, info in matches.items():
         w_gt = info["width_mm_gt"]
         w_meas = info["width_mm_mes"]
@@ -345,14 +370,19 @@ def print_single_result(matches, meas_cracks):
         l_meas = info["length_m_mes"]
 
         print(
-            f"Measurement: {meas_uid}\n"
-            f"  Matched Ground Truth: {info['best_gt']}\n"
-            f"  Geometric distance: {info['distance']:.6f} m\n"
-            f"  Width:      GT = {w_gt:.3f} mm   |   Measured = {w_meas:.3f} mm   "
-            f"(Delta = {abs(w_gt - w_meas):.3f} mm)\n"
-            f"  Length:     GT = {l_gt:.3f} m    |   Measured = {l_meas:.3f} m    "
-            f"(Delta = {abs(l_gt - l_meas):.3f} m)\n"
+            f"Prediction/measurement: {meas_uid}\n"
+            f"  Best matching Ground Truth: {info['best_gt']}\n"
+            f"  Symmetric centerline distance: {info['distance']:.6f} m\n"
+            f"  Median width: GT = {w_gt:.3f} mm | Prediction = {w_meas:.3f} mm "
+            f"(absolute error = {abs(w_gt - w_meas):.3f} mm)\n"
+            f"  Length:       GT = {l_gt:.3f} m  | Prediction = {l_meas:.3f} m  "
+            f"(absolute error = {abs(l_gt - l_meas):.3f} m)\n"
         )
+
+    print("=== Evaluation accounting ===")
+    print(f"Ground-truth segments: {len(gt_cracks)}")
+    print(f"Predicted/measured segments evaluated: {len(meas_cracks)}")
+    print(f"Best-match assignments: {len(matches)}")
 
 
 # =========================
@@ -510,7 +540,9 @@ def run_batch_evaluation(root_path: Path, plot=False):
             continue
 
         try:
-            gt_cracks, meas_cracks, matches = evaluate_single_experiment(gt_path, meas_path)
+            gt_cracks, meas_cracks, matches = evaluate_single_experiment(
+                gt_path, meas_path
+            )
         except Exception as e:
             print(f"  -> Error during evaluation: {e}")
             failed.append({"test_series": test_series, "experiment": experiment, "reason": str(e)})
@@ -518,8 +550,11 @@ def run_batch_evaluation(root_path: Path, plot=False):
 
         rows = matches_to_rows(matches, test_series, experiment)
         all_rows.extend(rows)
-        print(f"  -> {len(rows)} of {len(meas_cracks)} measurements matched "
-              f"(GT: {gt_path.relative_to(root_path)}).")
+        print(
+            f"  -> Evaluated {len(matches)} prediction/measurement segment(s) "
+            f"against their best-matching GT segment "
+            f"(GT: {gt_path.relative_to(root_path)})."
+        )
 
         if plot:
             plot_matches(gt_cracks, meas_cracks, matches,
@@ -527,12 +562,12 @@ def run_batch_evaluation(root_path: Path, plot=False):
 
     df = pd.DataFrame(all_rows)
 
-    print("\n=== Detailed results per matched crack ===")
+    print("\n=== Detailed results per evaluated crack ===")
     if not df.empty:
         with pd.option_context("display.max_rows", None, "display.width", 160):
             print(df.to_string(index=False))
     else:
-        print("No matches found.")
+        print("No evaluated cracks found.")
 
     print("\n=== Summary per experiment ===")
     per_experiment = summarize(df, ["test_series", "experiment"])
@@ -563,10 +598,13 @@ def main(data_path: Path, plot: bool):
     meas_path = data_path / "Evaluation_example.json"
 
     if gt_path.exists() and meas_path.exists():
-        # -------- Single mode (same as the original script) --------
-        gt_cracks, meas_cracks, matches = evaluate_single_experiment(gt_path, meas_path)
-        print_single_result(matches, meas_cracks)
-        plot_matches(gt_cracks, meas_cracks, matches)
+        # -------- Single mode --------
+        gt_cracks, meas_cracks, matches = evaluate_single_experiment(
+            gt_path, meas_path
+        )
+        print_single_result(matches, meas_cracks, gt_cracks)
+        if plot:
+            plot_matches(gt_cracks, meas_cracks, matches)
     else:
         # -------- Batch mode: data_path is the root folder --------
         run_batch_evaluation(data_path, plot=plot)
